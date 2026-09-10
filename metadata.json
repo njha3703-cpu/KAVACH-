@@ -1,0 +1,6 @@
+{
+  "name": "KAVACH – AI-Powered Mine Subsidence Monitoring",
+  "description": "KAVACH is an industrial-grade AI-powered mine subsidence monitoring and early warning system featuring ESP32 and ESP-NOW telemetry, GIS risk heatmaps, automated buzzer/siren actuation, and multilingual control room analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
