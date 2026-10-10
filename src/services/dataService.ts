@@ -5,8 +5,17 @@ import { TILT_TRENDS, DISPLACEMENT_TRENDS, VIBRATION_TRENDS, CRACK_EVENTS } from
 import { calculateNodeRisk, calculateRateOfChange, generateAiSubsidencePrediction, SensorThresholds, DEFAULT_THRESHOLDS } from '../ai/riskEngine';
 import { audioSynthesizer } from './audioAlert';
 import { offlineStorage } from './offlineStorage';
+import { ref, onValue } from 'firebase/database';
+import { database, isFirebaseConfigured } from '../firebase/firebaseConfig';
 
 type DataChangeListener = () => void;
+
+const ALLOWED_NODE_IDS = ['N1', 'N2'];
+
+const DEFAULT_NODE_LOCATIONS: Record<string, { latitude: number; longitude: number; zone: string }> = {
+  N1: { latitude: 23.7950, longitude: 86.4255, zone: 'Zone 1' },
+  N2: { latitude: 23.7985, longitude: 86.4375, zone: 'Zone 2' },
+};
 
 class KavachDataService {
   private nodes: SensorNode[] = [];
@@ -32,7 +41,7 @@ class KavachDataService {
     syncState: 'IDLE',
   };
   private thresholds: SensorThresholds = { ...DEFAULT_THRESHOLDS };
-  private focusedNodeId: string | null = 'NODE_27';
+  private focusedNodeId: string | null = 'N1';
   private inspectingNode: SensorNode | null = null;
   private criticalPopupAlert: Alert | null = null;
   private isSimulating: boolean = false;
@@ -51,29 +60,56 @@ class KavachDataService {
   };
 
   constructor() {
-    // 5. SENSOR VALUES MUST INITIALLY BE ZERO
-    this.nodes = JSON.parse(JSON.stringify(INITIAL_NODES));
-    // Initial alerts start with UNREAD state
+    this.nodes = [];
     this.alerts = JSON.parse(JSON.stringify(INITIAL_ALERTS)).map((a: Alert) => ({
       ...a,
       readState: a.status === 'resolved' ? 'RESOLVED' : 'UNREAD',
     }));
-    // Start with NO active critical popup until triggered
     this.criticalPopupAlert = null;
 
     this.initOfflineAndNetwork();
+    this.initFirebaseHardwareSync();
+  }
+
+  private initFirebaseHardwareSync() {
+    if (!isFirebaseConfigured) {
+      console.warn('Firebase not configured — hardware sync skipped, using mock data only.');
+      return;
+    }
+    const sensorDataRef = ref(database, 'sensorData');
+    onValue(sensorDataRef, (snapshot) => {
+      const data = snapshot.val();
+      if (!data) return;
+      Object.keys(data).forEach((nodeKey) => {
+        const reading = data[nodeKey];
+        if (!reading) return;
+        this.ingestEsp32Telemetry({
+          nodeId: nodeKey,
+          sensors: {
+            tiltX: (reading.ax ?? 0) / 16384 * 90,
+            tiltY: (reading.ay ?? 0) / 16384 * 90,
+            tiltZ: (reading.az ?? 0) / 16384 * 90,
+            vibration: reading.vibration ?? 0,
+            displacement: reading.distance ?? 0,
+            crack: reading.crack === 1 || reading.crack === true,
+          },
+          connectivity: 'WiFi',
+        });
+      });
+    }, (error) => {
+      console.error('Firebase sensorData listener error:', error);
+    });
   }
 
   private async initOfflineAndNetwork() {
-    // Attempt to load offline cached data if available
     try {
       const cachedNodes = await offlineStorage.loadNodes();
       if (cachedNodes && cachedNodes.length > 0) {
-        this.nodes = cachedNodes;
+        this.nodes = cachedNodes.filter(n => ALLOWED_NODE_IDS.includes(n.id));
       }
       const cachedAlerts = await offlineStorage.loadAlerts();
       if (cachedAlerts && cachedAlerts.length > 0) {
-        this.alerts = cachedAlerts;
+        this.alerts = cachedAlerts.filter(a => ALLOWED_NODE_IDS.includes(a.nodeId) || a.nodeId === 'ALL_NODES');
       }
       const pendingQueue = await offlineStorage.getPendingQueue();
       this.systemHealth.offlineQueueCount = pendingQueue.length;
@@ -85,7 +121,6 @@ class KavachDataService {
       console.warn('Offline storage load error', e);
     }
 
-    // Bind browser connectivity listeners
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => this.handleNetworkOnline());
       window.addEventListener('offline', () => this.handleNetworkOffline());
@@ -99,7 +134,6 @@ class KavachDataService {
     this.systemHealth.databaseStatus = 'CONNECTED';
     this.systemHealth.serverAvailable = true;
 
-    // Only show connection restored notification if system was actually offline!
     if (this.wasOffline) {
       this.wasOffline = false;
       this.systemHealth.syncState = 'SYNCING';
@@ -109,13 +143,11 @@ class KavachDataService {
       };
       this.notify();
 
-      // Process pending queue from offline storage
       try {
         const queue = await offlineStorage.getPendingQueue();
         if (queue.length > 0) {
           for (const item of queue) {
             await offlineStorage.updateQueueState(item.id, 'SYNCING');
-            // Ingest item into live state if not already present
             if (item.payload) {
               this.applyTelemetryPayload(item.payload);
             }
@@ -163,6 +195,22 @@ class KavachDataService {
     }
   }
 
+  private pushTrendPoint(type: 'tilt' | 'displacement' | 'vibration', nodeId: string, value: number, timeLabel: string) {
+    const arr = this.trends[type] as any[];
+    const last = arr[arr.length - 1];
+    if (last && last.time === timeLabel) {
+      last[nodeId] = value;
+    } else {
+      const newPoint: any = { time: timeLabel };
+      if (last) {
+        Object.keys(last).forEach(k => { if (k !== 'time') newPoint[k] = last[k]; });
+      }
+      newPoint[nodeId] = value;
+      arr.push(newPoint);
+      if (arr.length > 8) arr.shift();
+    }
+  }
+
   public subscribe(listener: DataChangeListener) {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -172,7 +220,6 @@ class KavachDataService {
     this.listeners.forEach(l => l());
   }
 
-  // Getters
   public getNodes(): SensorNode[] {
     return this.nodes;
   }
@@ -275,8 +322,8 @@ class KavachDataService {
     });
   }
 
-  // Dynamic Node Management (Requirement 6)
   public addNode(node: SensorNode) {
+    if (!ALLOWED_NODE_IDS.includes(node.id)) return;
     if (!this.nodes.some(n => n.id === node.id)) {
       this.nodes = [...this.nodes, node];
       this.systemHealth.lastSync = 'Just now';
@@ -293,7 +340,6 @@ class KavachDataService {
     this.notify();
   }
 
-  // KPI Calculations (Strictly Dynamic - Requirement 5 & 6)
   public getKpis() {
     const total = this.nodes.length;
     const online = this.nodes.filter(n => n.status !== 'Offline').length;
@@ -329,7 +375,6 @@ class KavachDataService {
     return generateAiSubsidencePrediction(this.nodes);
   }
 
-  // Siren Control Architecture (Requirements 3, 13, 15, 16)
   public triggerSiren(reason: string = 'Operator Manual Test', activeNodeId?: string) {
     this.sirenState = {
       command: 'TRIGGER_BUZZER',
@@ -351,12 +396,10 @@ class KavachDataService {
       isSimulated: true,
     };
     audioSynthesizer.stop();
-    // Dismiss critical popup when siren is stopped by operator
     this.criticalPopupAlert = null;
     this.notify();
   }
 
-  // Synchronized Alert Actions (Requirements 5, 6, 7)
   public markAlertAsRead(id: string) {
     this.alerts = this.alerts.map(a => {
       if (a.id === id && a.status !== 'resolved') {
@@ -428,7 +471,6 @@ class KavachDataService {
     this.notify();
   }
 
-  // Emergency Evacuation Alert
   public triggerEmergencyEvacuation() {
     const alert: Alert = {
       id: `ALT_EMERGENCY_${Date.now()}`,
@@ -450,9 +492,8 @@ class KavachDataService {
     this.notify();
   }
 
-  // 9. SIMULATE WARNING
   public simulateWarning() {
-    const target = this.nodes.find(n => n.id === 'NODE_16') || this.nodes[0];
+    const target = this.nodes.find(n => n.id === 'N1') || this.nodes[0];
     if (!target) return;
     target.sensors.tiltMagnitude = 1.95;
     target.sensors.tiltX = 1.6;
@@ -488,9 +529,8 @@ class KavachDataService {
     this.notify();
   }
 
-  // 10. SIMULATE HIGH RISK
   public simulateHighRisk() {
-    const target = this.nodes.find(n => n.id === 'NODE_34') || this.nodes[0];
+    const target = this.nodes.find(n => n.id === 'N2') || this.nodes[0];
     if (!target) return;
     target.sensors.vibration = 2.45;
     target.sensors.displacement = 2.8;
@@ -527,15 +567,13 @@ class KavachDataService {
     this.notify();
   }
 
-  // 11. SIMULATE CRITICAL ALERT + SIREN (Immediate 1-click sequence)
   public simulateCriticalAlert() {
-    let target = this.nodes.find(n => n.id === 'NODE_27');
+    let target = this.nodes.find(n => n.id === 'N1');
     if (!target && this.nodes.length > 0) {
       target = this.nodes[0];
     }
     if (!target) return;
 
-    // 1. Node becomes CRITICAL
     target.sensors.tiltMagnitude = 2.45;
     target.sensors.tiltX = 2.2;
     target.sensors.tiltY = 1.1;
@@ -557,7 +595,6 @@ class KavachDataService {
       displacementTrend: 'increasing',
     };
 
-    // 2. Critical Alert Object
     const newAlert: Alert = {
       id: `ALT_CRIT_${Date.now()}`,
       nodeId: target.id,
@@ -574,34 +611,21 @@ class KavachDataService {
       sensorSnapshot: { ...target.sensors },
     };
 
-    // 3. Update alert feeds
     this.alerts = [newAlert, ...this.alerts];
-    // 4. Critical Alert Popup appears immediately
     this.criticalPopupAlert = newAlert;
-    // 5. Map focuses on affected node
     this.focusedNodeId = target.id;
 
-    // 6. SIREN STARTS IMMEDIATELY (no extra click!)
     this.triggerSiren(`Subsidence progression detected at ${target.label} (${target.location.zone})`, target.id);
 
-    // 7. Push trend data spike
     const nowLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    this.trends.tilt.push({
-      time: nowLabel,
-      Node12: 0.1,
-      Node16: 1.85,
-      Node27: 2.45,
-      Node34: 1.35,
-    });
-    if (this.trends.tilt.length > 8) this.trends.tilt.shift();
+    this.pushTrendPoint('tilt', target.id, target.sensors.tiltMagnitude, nowLabel);
+    this.pushTrendPoint('displacement', target.id, target.sensors.displacement, nowLabel);
+    this.pushTrendPoint('vibration', target.id, target.sensors.vibration, nowLabel);
 
     this.systemHealth.lastSync = 'Just now';
     this.notify();
   }
 
-  /**
-   * Hardware Integration Endpoint: Ingests raw packet from ESP32 Gateway via ESP-NOW
-   */
   public ingestEsp32Telemetry(payload: {
     nodeId: string;
     timestamp?: string;
@@ -618,7 +642,11 @@ class KavachDataService {
     battery?: number;
     connectivity?: 'WiFi' | 'GSM' | 'Mesh' | 'Offline';
   }) {
-    const existingIndex = this.nodes.findIndex(n => n.id === payload.nodeId);
+    if (!ALLOWED_NODE_IDS.includes(payload.nodeId)) {
+      console.warn(`Ignoring telemetry from unknown/unauthorized node: ${payload.nodeId}`);
+      return;
+    }
+
     const tiltMagnitude = Number(
       Math.sqrt(
         Math.pow(payload.sensors.tiltX, 2) + Math.pow(payload.sensors.tiltY, 2)
@@ -638,7 +666,6 @@ class KavachDataService {
     };
 
     if (!this.systemHealth.isOnline) {
-      // Ingest while offline: store in persistent queue
       offlineStorage.enqueueTelemetry(payload.nodeId, payload);
       this.systemHealth.offlineQueueCount = (this.systemHealth.offlineQueueCount || 0) + 1;
       this.systemHealth.syncState = 'PENDING_SYNC';
@@ -648,6 +675,10 @@ class KavachDataService {
   }
 
   private applyTelemetryPayload(payload: any, computedSensors?: any) {
+    if (!ALLOWED_NODE_IDS.includes(payload.nodeId)) {
+      return;
+    }
+
     const existingIndex = this.nodes.findIndex(n => n.id === payload.nodeId);
     const fullSensors = computedSensors || {
       tiltX: payload.sensors.tiltX,
@@ -665,6 +696,8 @@ class KavachDataService {
       temperature: 30,
     };
 
+    const forcedLocation = DEFAULT_NODE_LOCATIONS[payload.nodeId];
+
     if (existingIndex >= 0) {
       const existing = this.nodes[existingIndex];
       const rate = calculateRateOfChange(fullSensors, existing.sensors, 0.1);
@@ -672,6 +705,7 @@ class KavachDataService {
 
       this.nodes[existingIndex] = {
         ...existing,
+        location: forcedLocation ? { ...forcedLocation } : existing.location,
         sensors: fullSensors,
         previousSensors: existing.sensors,
         rateOfChange: rate,
@@ -684,16 +718,15 @@ class KavachDataService {
         lastUpdated: 'Just now (Hardware Ingest)',
       };
     } else {
-      // Dynamic addition of previously unseen ESP32 nodes
       const rate = calculateRateOfChange(fullSensors);
       const risk = calculateNodeRisk(fullSensors, rate, this.thresholds);
       const newNode: SensorNode = {
         id: payload.nodeId,
         label: payload.nodeId.replace('NODE_', 'Node '),
         location: {
-          latitude: payload.location?.latitude || 23.795,
-          longitude: payload.location?.longitude || 86.43,
-          zone: payload.location?.zone || 'Zone 3B',
+          latitude: forcedLocation?.latitude ?? payload.location?.latitude ?? 23.795,
+          longitude: forcedLocation?.longitude ?? payload.location?.longitude ?? 86.43,
+          zone: forcedLocation?.zone ?? payload.location?.zone ?? 'Zone 3B',
         },
         sensors: fullSensors,
         rateOfChange: rate,
@@ -707,7 +740,11 @@ class KavachDataService {
       this.nodes.push(newNode);
     }
 
-    // 18. CRACK SENSOR IN ALERTS: Check if crack is triggered
+    const nowLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    this.pushTrendPoint('tilt', payload.nodeId, fullSensors.tiltMagnitude, nowLabel);
+    this.pushTrendPoint('displacement', payload.nodeId, fullSensors.displacement, nowLabel);
+    this.pushTrendPoint('vibration', payload.nodeId, fullSensors.vibration, nowLabel);
+
     if (fullSensors.crack) {
       const existingCrackAlert = this.alerts.find(
         a => a.nodeId === payload.nodeId && a.title.includes('CRACK') && a.status === 'active'

@@ -14,9 +14,11 @@ import {
   Bar 
 } from 'recharts';
 
+const LINE_COLORS = ['#38bdf8', '#f59e0b', '#c084fc', '#10b981', '#ec4899', '#facc15'];
+
 export const DeformationTrends: React.FC = () => {
   const { t } = useLanguage();
-  const { trends } = useKavachData();
+  const { trends, nodes } = useKavachData();
   const [activeTab, setActiveTab] = useState<'tilt' | 'displacement' | 'vibration' | 'crack'>('tilt');
 
   const getLineChartData = (): TrendPoint[] => {
@@ -43,15 +45,17 @@ export const DeformationTrends: React.FC = () => {
     }
   };
 
+  // Dynamic list of currently connected nodes (instead of hardcoded Node12/16/27/34)
+  const activeNodeIds = nodes.map(n => n.id);
+
   return (
     <div className="bg-[#0f172a]/95 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between shadow-sm h-[320px]">
-      {/* Top Header & Tabs (exact reproduction of reference image) */}
+      {/* Top Header & Tabs */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
         <h3 className="text-sm font-bold text-white tracking-wide text-left">
           {t('deformation_trends')}
         </h3>
 
-        {/* Tab Buttons */}
         <div className="flex items-center space-x-1 bg-slate-900 p-1 rounded-xl border border-slate-800 self-start sm:self-auto">
           {(['tilt', 'displacement', 'vibration', 'crack'] as const).map(tab => (
             <button
@@ -106,65 +110,30 @@ export const DeformationTrends: React.FC = () => {
                 contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', fontSize: '11px' }}
                 labelStyle={{ color: '#94a3b8', fontWeight: 'bold' }}
               />
-              {/* Node 12 Line (Blue) */}
-              <Line 
-                type="monotone" 
-                dataKey="Node12" 
-                stroke="#38bdf8" 
-                strokeWidth={2} 
-                dot={{ r: 3, fill: '#38bdf8' }} 
-                name="Node 12"
-              />
-              {/* Node 16 Line (Yellow) */}
-              <Line 
-                type="monotone" 
-                dataKey="Node16" 
-                stroke="#f59e0b" 
-                strokeWidth={2} 
-                dot={{ r: 3, fill: '#f59e0b' }} 
-                name="Node 16"
-              />
-              {/* Node 27 Line (Purple/Red Critical) */}
-              <Line 
-                type="monotone" 
-                dataKey="Node27" 
-                stroke="#c084fc" 
-                strokeWidth={2.5} 
-                dot={{ r: 3.5, fill: '#c084fc' }} 
-                name="Node 27"
-              />
-              {/* Node 34 Line (Emerald Green) */}
-              <Line 
-                type="monotone" 
-                dataKey="Node34" 
-                stroke="#10b981" 
-                strokeWidth={2} 
-                dot={{ r: 3, fill: '#10b981' }} 
-                name="Node 34"
-              />
+              {activeNodeIds.map((nodeId, idx) => (
+                <Line
+                  key={nodeId}
+                  type="monotone"
+                  dataKey={nodeId}
+                  stroke={LINE_COLORS[idx % LINE_COLORS.length]}
+                  strokeWidth={2}
+                  dot={{ r: 3, fill: LINE_COLORS[idx % LINE_COLORS.length] }}
+                  name={nodeId}
+                />
+              ))}
             </LineChart>
           </ResponsiveContainer>
         )}
       </div>
 
-      {/* Legend Row (matching reference image) */}
-      <div className="flex items-center justify-center space-x-4 text-[11px] text-slate-300 font-medium pt-1 border-t border-slate-800/80">
-        <div className="flex items-center space-x-1.5">
-          <span className="w-2 h-2 rounded-full bg-[#38bdf8]"></span>
-          <span>Node 12</span>
-        </div>
-        <div className="flex items-center space-x-1.5">
-          <span className="w-2 h-2 rounded-full bg-[#f59e0b]"></span>
-          <span>Node 16</span>
-        </div>
-        <div className="flex items-center space-x-1.5">
-          <span className="w-2 h-2 rounded-full bg-[#c084fc]"></span>
-          <span>Node 27</span>
-        </div>
-        <div className="flex items-center space-x-1.5">
-          <span className="w-2 h-2 rounded-full bg-[#10b981]"></span>
-          <span>Node 34</span>
-        </div>
+      {/* Legend Row - dynamic */}
+      <div className="flex items-center justify-center flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-300 font-medium pt-1 border-t border-slate-800/80">
+        {activeNodeIds.map((nodeId, idx) => (
+          <div key={nodeId} className="flex items-center space-x-1.5">
+            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: LINE_COLORS[idx % LINE_COLORS.length] }}></span>
+            <span>{nodeId}</span>
+          </div>
+        ))}
       </div>
     </div>
   );

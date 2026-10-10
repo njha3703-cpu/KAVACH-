@@ -4,19 +4,12 @@ import { useKavachData } from '../hooks/useKavachData';
 import { PrintableReport } from '../components/reports/PrintableReport';
 import { 
   BarChart3, 
-  Download, 
-  TrendingUp, 
-  Calendar, 
-  FileText, 
-  ShieldCheck, 
   Printer 
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
   LineChart, 
   Line, 
-  BarChart, 
-  Bar, 
   XAxis, 
   YAxis, 
   CartesianGrid, 
@@ -24,19 +17,35 @@ import {
   Legend 
 } from 'recharts';
 
+const LINE_COLORS = ['#38bdf8', '#f59e0b', '#c084fc', '#10b981', '#ec4899', '#facc15'];
+
 export const AnalyticsPage: React.FC = () => {
   const { t } = useLanguage();
   const { nodes, trends, kpis, alerts, systemHealth, aiPrediction } = useKavachData();
   const [timeRange, setTimeRange] = useState<'24h' | '7d' | '30d'>('24h');
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
 
-  // Zone stability aggregations
-  const zoneStats = [
-    { zone: 'Zone 1A (South)', avgTilt: 0.22, avgDisp: 0.6, riskScore: 18, status: 'Stable' },
-    { zone: 'Zone 2A (West Portal)', avgTilt: 0.45, avgDisp: 1.1, riskScore: 32, status: 'Normal' },
-    { zone: 'Zone 3B (Central Pit)', avgTilt: 1.95, avgDisp: 2.9, riskScore: 89, status: 'High Risk' },
-    { zone: 'Zone 4C (East Wall)', avgTilt: 0.85, avgDisp: 1.4, riskScore: 48, status: 'Caution' },
-  ];
+  const activeNodeIds = nodes.map(n => n.id);
+
+  // Zone stability aggregations - built dynamically from live connected nodes
+  const zoneMap = new Map<string, { tiltSum: number; dispSum: number; riskSum: number; count: number }>();
+  nodes.forEach(n => {
+    const key = n.location.zone;
+    const entry = zoneMap.get(key) || { tiltSum: 0, dispSum: 0, riskSum: 0, count: 0 };
+    entry.tiltSum += n.sensors.tiltMagnitude;
+    entry.dispSum += n.sensors.displacement;
+    entry.riskSum += n.riskScore;
+    entry.count += 1;
+    zoneMap.set(key, entry);
+  });
+
+  const zoneStats = Array.from(zoneMap.entries()).map(([zone, v]) => {
+    const avgTilt = Number((v.tiltSum / v.count).toFixed(2));
+    const avgDisp = Number((v.dispSum / v.count).toFixed(1));
+    const riskScore = Math.round(v.riskSum / v.count);
+    const status = riskScore > 75 ? 'High Risk' : riskScore > 40 ? 'Caution' : riskScore > 20 ? 'Normal' : 'Stable';
+    return { zone, avgTilt, avgDisp, riskScore, status };
+  });
 
   const handlePrint = () => {
     setIsPrintModalOpen(true);
@@ -61,7 +70,6 @@ export const AnalyticsPage: React.FC = () => {
         </div>
 
         <div className="flex items-center space-x-2">
-          {/* Time range selector */}
           <div className="flex items-center space-x-1 bg-slate-900 p-1 rounded-xl border border-slate-800 text-xs">
             {(['24h', '7d', '30d'] as const).map(r => (
               <button
@@ -104,10 +112,16 @@ export const AnalyticsPage: React.FC = () => {
                 <YAxis stroke="#64748b" fontSize={11} tickLine={false} />
                 <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px' }} />
                 <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                <Line type="monotone" dataKey="Node12" stroke="#38bdf8" strokeWidth={2} name="Node 12 (Normal)" />
-                <Line type="monotone" dataKey="Node16" stroke="#f59e0b" strokeWidth={2} name="Node 16 (Warning)" />
-                <Line type="monotone" dataKey="Node27" stroke="#ef4444" strokeWidth={2.5} name="Node 27 (Critical)" />
-                <Line type="monotone" dataKey="Node34" stroke="#10b981" strokeWidth={2} name="Node 34 (Caution)" />
+                {activeNodeIds.map((nodeId, idx) => (
+                  <Line
+                    key={nodeId}
+                    type="monotone"
+                    dataKey={nodeId}
+                    stroke={LINE_COLORS[idx % LINE_COLORS.length]}
+                    strokeWidth={2}
+                    name={nodeId}
+                  />
+                ))}
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -127,10 +141,16 @@ export const AnalyticsPage: React.FC = () => {
                 <YAxis stroke="#64748b" fontSize={11} tickLine={false} />
                 <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px' }} />
                 <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                <Line type="monotone" dataKey="Node12" stroke="#38bdf8" strokeWidth={2} name="Node 12" />
-                <Line type="monotone" dataKey="Node16" stroke="#f59e0b" strokeWidth={2} name="Node 16" />
-                <Line type="monotone" dataKey="Node27" stroke="#f43f5e" strokeWidth={2.5} name="Node 27 (High Risk)" />
-                <Line type="monotone" dataKey="Node34" stroke="#10b981" strokeWidth={2} name="Node 34" />
+                {activeNodeIds.map((nodeId, idx) => (
+                  <Line
+                    key={nodeId}
+                    type="monotone"
+                    dataKey={nodeId}
+                    stroke={LINE_COLORS[idx % LINE_COLORS.length]}
+                    strokeWidth={2}
+                    name={nodeId}
+                  />
+                ))}
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -155,27 +175,35 @@ export const AnalyticsPage: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 font-mono-tech">
-              {zoneStats.map((z, idx) => (
-                <tr key={idx} className="hover:bg-slate-850 transition-colors">
-                  <td className="py-2.5 px-3 font-bold text-white font-sans">{z.zone}</td>
-                  <td className="py-2.5 px-3 text-slate-200">{z.avgTilt}°</td>
-                  <td className="py-2.5 px-3 text-slate-200">{z.avgDisp} mm</td>
-                  <td className="py-2.5 px-3 font-bold">
-                    <span className={z.riskScore > 75 ? 'text-red-400' : z.riskScore > 40 ? 'text-amber-400' : 'text-emerald-400'}>
-                      {z.riskScore} / 100
-                    </span>
-                  </td>
-                  <td className="py-2.5 px-3 font-sans">
-                    <span className={`px-2.5 py-0.5 rounded text-[11px] font-bold ${
-                      z.status === 'High Risk' ? 'bg-red-950 text-red-400 border border-red-800' :
-                      z.status === 'Caution' ? 'bg-amber-950 text-amber-400 border border-amber-800' :
-                      'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                    }`}>
-                      {z.status}
-                    </span>
+              {zoneStats.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-4 px-3 text-slate-500 text-center font-sans">
+                    No connected node data yet
                   </td>
                 </tr>
-              ))}
+              ) : (
+                zoneStats.map((z, idx) => (
+                  <tr key={idx} className="hover:bg-slate-850 transition-colors">
+                    <td className="py-2.5 px-3 font-bold text-white font-sans">{z.zone}</td>
+                    <td className="py-2.5 px-3 text-slate-200">{z.avgTilt}°</td>
+                    <td className="py-2.5 px-3 text-slate-200">{z.avgDisp} mm</td>
+                    <td className="py-2.5 px-3 font-bold">
+                      <span className={z.riskScore > 75 ? 'text-red-400' : z.riskScore > 40 ? 'text-amber-400' : 'text-emerald-400'}>
+                        {z.riskScore} / 100
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 font-sans">
+                      <span className={`px-2.5 py-0.5 rounded text-[11px] font-bold ${
+                        z.status === 'High Risk' ? 'bg-red-950 text-red-400 border border-red-800' :
+                        z.status === 'Caution' ? 'bg-amber-950 text-amber-400 border border-amber-800' :
+                        'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                      }`}>
+                        {z.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

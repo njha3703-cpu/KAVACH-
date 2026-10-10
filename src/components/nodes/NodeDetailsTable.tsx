@@ -9,12 +9,10 @@ export const NodeDetailsTable: React.FC = () => {
   const { nodes, openNodeDetails, setFocusedNodeId } = useKavachData();
   const navigate = useNavigate();
 
-  // Highlighted focal nodes with fallback to dynamic first 6 nodes in DB
-  const targetIds = ['NODE_12', 'NODE_16', 'NODE_18', 'NODE_23', 'NODE_27', 'NODE_34'];
-  const matchedNodes = targetIds
-    .map(id => nodes.find(n => n.id === id))
-    .filter(Boolean) as typeof nodes;
-  const displayNodes = matchedNodes.length >= 6 ? matchedNodes : nodes.slice(0, 6);
+  // Only show the real hardware nodes
+const displayNodes = nodes.filter(
+  node => node.id === 'N1' || node.id === 'N2'
+);
 
   const getStatusDot = (status: string, riskLevel: string) => {
     if (riskLevel === 'CRITICAL' || status === 'Critical') {
@@ -108,7 +106,9 @@ export const NodeDetailsTable: React.FC = () => {
       {/* Footer */}
       <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
         <span>LoRa Surface Mesh</span>
-        <span className="text-cyan-400 font-mono-tech">{nodes.length} Nodes Active</span>
+       <span className="text-cyan-400 font-mono-tech">
+  {displayNodes.length} Nodes Active
+</span>
       </div>
     </div>
   );

@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { testFirebase } from "./services/firebasetest";
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { LanguageProvider } from './hooks/useLanguage';
@@ -15,6 +17,10 @@ import { SettingsPage } from './pages/SettingsPage';
 import { Login } from './pages/Login';
 
 export default function App() {
+  useEffect(() =>{
+    testFirebase();
+  },[]);
+
   return (
     <LanguageProvider>
       <AuthProvider>
